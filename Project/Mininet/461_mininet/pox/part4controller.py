@@ -30,7 +30,7 @@ SUBNETS = {
 
 class Part4Controller(object):
     """
-    A Connection object for that switch is passed to the __init__ function.
+    A Connection object for that switch is self.flood()ed to the __init__ function.
     """
 
     def __init__(self, connection):
@@ -58,23 +58,42 @@ class Part4Controller(object):
 
     def s1_setup(self):
         # put switch 1 rules here
-        pass
+        self.flood()
 
     def s2_setup(self):
         # put switch 2 rules here
-        pass
+        self.flood()
 
     def s3_setup(self):
         # put switch 3 rules here
-        pass
+        self.flood()
 
     def cores21_setup(self):
         # put core switch rules here
-        pass
+        # drop all IP communication from hnotrust to serv1
+        msg = of.ofp_flow_mod()
+        msg.priority = 1
+        msg.match.dl_type = 0x800
+        msg.match.nw_src = IPS["hnotrust"]
+        msg.match.nw_dst = IPS["serv1"]
+        self.connection.send(msg)
+
+        # drop all ICMP from hnotrust
+        msg = of.ofp_flow_mod()
+        msg.priority = 1
+        msg.match.dl_type = 0x800
+        msg.match.nw_proto = 1
+        msg.match.nw_src = IPS["hnotrust"]
+        self.connection.send(msg)
 
     def dcs31_setup(self):
         # put datacenter switch rules here
-        pass
+        self.flood()
+
+    def flood(self):
+        msg = of.ofp_flow_mod()
+        msg.actions.append(of.ofp_action_output(port=of.OFPP_FLOOD))
+        self.connection.send(msg)
 
     # used in part 4 to handle individual ARP packets
     # not needed for part 3 (USE RULES!)
@@ -91,16 +110,42 @@ class Part4Controller(object):
         Packets not handled by the router rules will be
         forwarded to this method to be handled by the controller
         """
+        # Assign an arbitrary MAC address for our controller
+        controller_mac = EthAddr('00:00:00:00:00:07')
 
         packet = event.parsed  # This is the parsed packet data.
         if not packet.parsed:
             log.warning("Ignoring incomplete packet")
             return
 
-        packet_in = event.ofp  # The actual ofp_packet_in message.
-        print(
-            "Unhandled packet from " + str(self.connection.dpid) + ":" + packet.dump()
-        )
+        # Check if the packet is an ARP request or reply
+        if packet.type == 0x806:  # ARP
+            arp_packet = packet.payload
+
+            # Set up a flow rule based on the ARP details. For all IP traffic
+            # destined to `arp_packet.protosrc` (the IP address in the ARP request),
+            # update the Ethernet destination to `arp_packet.hwsrc` and forward the
+            # traffic to the port where the ARP packet was received.
+            flow_mod = of.ofp_flow_mod()
+            flow_mod.priority = 0
+            flow_mod.match.dl_type = 0x800  # IPv4
+            flow_mod.match.nw_dst = arp_packet.protosrc
+            flow_mod.actions.append(
+                of.ofp_action_dl_addr.set_dst(arp_packet.hwsrc))
+            flow_mod.actions.append(of.ofp_action_output(port=event.port))
+            self.connection.send(flow_mod)
+
+            # Create an ARP reply to respond to the ARP sender, using the controller's
+            # MAC address. Swap the source and destination IP/MAC fields to craft the reply.
+            arp_packet.opcode = 2  # ARP Reply
+            arp_packet.protodst, arp_packet.protosrc = arp_packet.protosrc, arp_packet.protodst
+            arp_packet.hwdst = arp_packet.hwsrc
+            arp_packet.hwsrc = controller_mac
+            packet.dst = packet.src
+            packet.src = controller_mac
+
+            # Send the crafted ARP reply back to the port where the request came from.
+            self.resend_packet(packet, event.port)
 
 
 def launch():

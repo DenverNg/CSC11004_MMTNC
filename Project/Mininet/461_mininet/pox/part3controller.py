@@ -58,23 +58,86 @@ class Part3Controller(object):
 
     def s1_setup(self):
         # put switch 1 rules here
-        pass
+        self.allow_flood()
 
     def s2_setup(self):
         # put switch 2 rules here
-        pass
+        self.allow_flood()
 
     def s3_setup(self):
         # put switch 3 rules here
-        pass
-
-    def cores21_setup(self):
-        # put core switch rules here
-        pass
+        self.allow_flood()
 
     def dcs31_setup(self):
         # put datacenter switch rules here
-        pass
+        self.allow_flood()
+
+    def cores21_setup(self):
+        # put core switch rules here
+        block
+
+    def allow_flood(self):
+        """
+        Flood all communications going through the network.
+        Drop the rest to avoid hanging iperfs.
+        """
+        # Allow flood
+        self.connection.send(
+            of.ofp_flow_mod(action=of.ofp_action_output(port=of.OFPP_FLOOD),
+                            priority=2))
+        # Drop all other packets
+        self.connection.send(of.ofp_flow_mod(priority=1))
+
+    def cores21_setup(self):
+        # Define the IP of hnotrust1
+        hnotrust_ip = IPS["hnotrust"]
+
+        # Block ICMP traffic from hnotrust1 to h10, h20, h30, and serv1
+        for dst in ["h10", "h20", "h30", "serv1"]:
+            dst_ip = IPS[dst]
+            self.block_icmp_traffic(hnotrust_ip, dst_ip)
+
+        # Block all IP traffic from hnotrust1 to serv1
+        self.block_ip_traffic(hnotrust_ip, IPS["serv1"])
+
+        # Allow all other IP traffic
+        for src, src_ip in IPS.items():
+            for dst, dst_ip in IPS.items():
+                if src == "hnotrust" and dst == "serv1":
+                    continue  # Skip because it’s already blocked
+                elif src == "hnotrust":
+                    self.allow_ip_traffic(src_ip, dst_ip)
+                elif src != dst:
+                    self.allow_ip_traffic(src_ip, dst_ip)
+
+    def block_icmp_traffic(self, src_ip, dst_ip):
+        """Block ICMP traffic from src_ip to dst_ip"""
+        msg = of.ofp_flow_mod()
+        msg.priority = 20  # Higher priority for specific rules
+        msg.match.dl_type = 0x0800  # IPv4
+        msg.match.nw_proto = 1  # ICMP protocol
+        msg.match.nw_src = IPAddr(src_ip)
+        msg.match.nw_dst = IPAddr(dst_ip)
+        self.connection.send(msg)
+
+    def block_ip_traffic(self, src_ip, dst_ip):
+        """Block all IP traffic from src_ip to dst_ip"""
+        msg = of.ofp_flow_mod()
+        msg.priority = 19  # Slightly lower priority than ICMP rule
+        msg.match.dl_type = 0x0800  # IPv4
+        msg.match.nw_src = IPAddr(src_ip)
+        msg.match.nw_dst = IPAddr(dst_ip)
+        self.connection.send(msg)
+
+    def allow_ip_traffic(self, src_ip, dst_ip):
+        """Allow all IP traffic from src_ip to dst_ip"""
+        msg = of.ofp_flow_mod()
+        msg.priority = 10  # Lower priority for default allow rules
+        msg.match.dl_type = 0x0800  # IPv4
+        msg.match.nw_src = IPAddr(src_ip)
+        msg.match.nw_dst = IPAddr(dst_ip)
+        msg.actions.append(of.ofp_action_output(port=of.OFPP_NORMAL))
+        self.connection.send(msg)
 
     # used in part 4 to handle individual ARP packets
     # not needed for part 3 (USE RULES!)
@@ -99,7 +162,8 @@ class Part3Controller(object):
 
         packet_in = event.ofp  # The actual ofp_packet_in message.
         print(
-            "Unhandled packet from " + str(self.connection.dpid) + ":" + packet.dump()
+            "Unhandled packet from " +
+            str(self.connection.dpid) + ":" + packet.dump()
         )
 
 
